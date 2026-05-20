@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>IELTS Writing Reader v9</title>
+  <title>IELTS Writing Reader v10</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <style>
@@ -104,6 +104,9 @@
     .dict-lbl{font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:800;color:var(--muted);margin-bottom:6px}
     .dict-text{font-size:16px;line-height:1.75;color:var(--text);white-space:pre-wrap;word-break:break-word}
     .dict-empty{color:var(--muted);font-style:italic}
+    .miss-word{color:#dc2626;font-weight:800;background:rgba(220,38,38,.10);border-radius:6px;padding:1px 3px}
+    .extra-word{color:#dc2626;font-weight:800;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px;background:rgba(220,38,38,.08);border-radius:6px;padding:1px 3px}
+    .dict-guide{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
     .mode-on{background:var(--accent)!important;color:var(--accentText)!important;border-color:var(--accent)!important}
     @media(max-width:760px){.data-tools{align-items:flex-start}.data-btns{width:100%}.data-btns .secondary-btn{flex:1}body{padding:12px}.hero{padding:18px}.app-title{font-size:22px}.field-row{grid-template-columns:1fr}.btn-up{height:44px}.r-topbar{grid-template-columns:auto 1fr}.tts-row{grid-column:1/-1;justify-content:stretch}.control{flex:1}.tts-btn{flex:1}.r-body{font-size:17px;line-height:1.95;max-height:60vh}.essay-grid{grid-template-columns:1fr}}
   </style>
@@ -703,12 +706,60 @@ function editDistance(a,b){
 function similarityPercent(user,correct){
   const a=normalizeForScore(user),b=normalizeForScore(correct);const max=Math.max(a.length,b.length,1);const dist=editDistance(a,b);return Math.max(0,Math.round((1-dist/max)*100));
 }
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function normalizeWordForDiff(w){
+  return String(w||'').toLowerCase().replace(/[‘’]/g,"'").replace(/[^a-z0-9']/g,'');
+}
+function tokenizeForDiff(text){
+  const raw=String(text||'').match(/[A-Za-z0-9]+(?:[’'][A-Za-z0-9]+)?|\s+|[^\sA-Za-z0-9]+/g)||[];
+  let wordIndex=0;
+  return raw.map(part=>{
+    const norm=normalizeWordForDiff(part);
+    const isWord=!!norm;
+    const token={raw:part,norm,isWord,wordIndex:isWord?wordIndex:-1};
+    if(isWord)wordIndex++;
+    return token;
+  });
+}
+function matchedWordIndexes(user,correct){
+  const a=tokenizeForDiff(user).filter(t=>t.isWord).map(t=>t.norm);
+  const b=tokenizeForDiff(correct).filter(t=>t.isWord).map(t=>t.norm);
+  const dp=Array.from({length:a.length+1},()=>Array(b.length+1).fill(0));
+  for(let i=1;i<=a.length;i++){
+    for(let j=1;j<=b.length;j++){
+      dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]+1:Math.max(dp[i-1][j],dp[i][j-1]);
+    }
+  }
+  const userMatch=new Set(),correctMatch=new Set();
+  let i=a.length,j=b.length;
+  while(i>0&&j>0){
+    if(a[i-1]===b[j-1]){userMatch.add(i-1);correctMatch.add(j-1);i--;j--}
+    else if(dp[i-1][j]>=dp[i][j-1])i--;else j--;
+  }
+  return {userMatch,correctMatch,userCount:a.length,correctCount:b.length};
+}
+function renderDiffHtml(text,matchedSet,cls){
+  return tokenizeForDiff(text).map(t=>{
+    const safe=escapeHtml(t.raw);
+    if(t.isWord&&!matchedSet.has(t.wordIndex))return `<span class="${cls}">${safe}</span>`;
+    return safe;
+  }).join('');
+}
 function fillDictResult(){
   const user=D.answers[D.idx]||'';const correct=cleanSentenceForDisplay(S.units[D.idx]?.text||'');
   const pct=similarityPercent(user,correct);
-  const score=document.getElementById('dictScore');if(score)score.textContent=`Độ giống tương đối: ${pct}% — Câu ${D.idx+1}/${S.units.length}`;
-  const u=document.getElementById('dictUserText');if(u){u.textContent=user.trim()?user:'Chưa nhập câu trả lời';u.classList.toggle('dict-empty',!user.trim())}
-  const c=document.getElementById('dictCorrectText');if(c)c.textContent=correct;
+  const score=document.getElementById('dictScore');
+  if(score)score.innerHTML=`Độ giống tương đối: ${pct}% — Câu ${D.idx+1}/${S.units.length}<div class="dict-guide">Chữ đỏ trong đáp án = chữ m viết sai hoặc thiếu. Chữ đỏ trong câu m viết = chữ dư hoặc chưa khớp.</div>`;
+  const diff=matchedWordIndexes(user,correct);
+  const u=document.getElementById('dictUserText');
+  if(u){
+    u.classList.toggle('dict-empty',!user.trim());
+    u.innerHTML=user.trim()?renderDiffHtml(user,diff.userMatch,'extra-word'):'Chưa nhập câu trả lời';
+  }
+  const c=document.getElementById('dictCorrectText');
+  if(c)c.innerHTML=renderDiffHtml(correct,diff.correctMatch,'miss-word');
 }
 function checkDictation(){
   if(!D.active)return;saveCurrentDictInput();D.checked[D.idx]=true;fillDictResult();
